@@ -1,6 +1,5 @@
 """
-modal app for qwen2.5-1.5b – inference and activation collection
-served from a single GPU container to avoid duplicate model loads
+modal app for loading the Qwen2.5-1.5B model and performing inference and activation collection
 """
 
 import modal
@@ -35,12 +34,6 @@ image = (
     },
 )
 class QwenModel:
-    """Single class that owns the model and exposes every operation on it.
-
-    One @app.cls → one container pool → one model load in GPU memory.
-    All methods (generate, collect_from_text, get_model_info) share it.
-    """
-
     @modal.enter()
     def load_model(self):
         import torch
@@ -72,7 +65,6 @@ class QwenModel:
 
     @modal.method()
     def collect_from_text(self, text: str, target_layer: int = 14):
-        """Thin wrapper – delegates to collect_activations.collect_from_text."""
         from collect_activations import collect_from_text
 
         result = collect_from_text(self.model, self.tokenizer, text, target_layer)
