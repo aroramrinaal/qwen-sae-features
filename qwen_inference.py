@@ -1,10 +1,10 @@
 """
-modal app for loading qwen2.5-1.5b and running inference
+modal app for loading the Qwen2.5-1.5B model and performing inference and activation collection
 """
 
 import modal
 
-app = modal.App("qwen-sae-inference")
+app = modal.App("qwen-sae")
 
 MODEL_ID = "Qwen/Qwen2.5-1.5B"
 
@@ -19,16 +19,21 @@ image = (
         "accelerate",
         "safetensors",
     )
+    .add_local_python_source("collect_activations")
 )
 
+
 @app.cls(
-    gpu="a10g",                 # using the a10g for now
+    gpu="a10g",
     image=image,
     timeout=3600,
-    scaledown_window=300,       # keeping container alive 5 min after last request
-    volumes={"/root/.cache/huggingface": hf_cache},
+    scaledown_window=300,
+    volumes={
+        "/root/.cache/huggingface": hf_cache,
+        "/activations": activation_storage,
+    },
 )
-class QwenInference:
+class QwenModel:
     @modal.enter()
     def load_model(self):
         import torch
@@ -41,6 +46,7 @@ class QwenInference:
             device_map="auto",
         )
         self.model.eval()
+        self.captured_activations = []
 
     @modal.method()
     def generate(self, prompt: str, max_new_tokens: int = 100, temperature: float = 0.7):
@@ -58,6 +64,20 @@ class QwenInference:
         return self.tokenizer.decode(outputs[0], skip_special_tokens=True)
 
     @modal.method()
+    def collect_from_text(self, text: str, target_layer: int = 14):
+        from collect_activations import collect_from_text
+
+        result = collect_from_text(self.model, self.tokenizer, text, target_layer)
+        if result is not None:
+            self.captured_activations.append(result["activation"])
+            return {
+                "shape": result["shape"],
+                "layer": result["layer"],
+                "num_tokens": result["num_tokens"],
+            }
+        return None
+
+    @modal.method()
     def get_model_info(self):
         return {
             "num_layers": self.model.config.num_hidden_layers,
@@ -65,54 +85,6 @@ class QwenInference:
             "vocab_size": self.model.config.vocab_size,
             "num_parameters": sum(p.numel() for p in self.model.parameters()),
         }
-
-
-@app.cls(
-    gpu="a10g",
-    image=image,
-    timeout=3600,
-    scaledown_window=300,
-    volumes={
-        "/root/.cache/huggingface": hf_cache,
-        "/activations": activation_storage,
-    },
-)
-class ActivationCollector:
-    @modal.enter()
-    def load_model(self):
-        import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-
-        self.tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            MODEL_ID,
-            dtype=torch.float16,
-            device_map="auto",
-        )
-        self.model.eval()
-        self.captured_activations = []
-
-    @modal.method()
-    def collect_from_text(self, text: str, target_layer: int = 14):
-        import torch
-
-        def hook_fn(module, input, output):
-            self.captured_activations.append(output[0].detach().cpu())
-
-        handle = self.model.model.layers[target_layer].register_forward_hook(hook_fn)
-        inputs = self.tokenizer(text, return_tensors="pt").to(self.model.device)
-        with torch.no_grad():
-            _ = self.model(**inputs)
-        handle.remove()
-
-        if self.captured_activations:
-            act = self.captured_activations[-1]
-            return {
-                "shape": list(act.shape),
-                "layer": target_layer,
-                "num_tokens": act.shape[1],
-            }
-        return None
 
 
 @app.local_entrypoint()
@@ -125,13 +97,13 @@ def main():
         "machine learning models work by",
     ]
 
-    inference = QwenInference()
+    model = QwenModel()
 
-    info = inference.get_model_info.remote()
+    info = model.get_model_info.remote()
     print("model information:", info)
 
     for p in test_prompts:
-        out = inference.generate.remote(p, max_new_tokens=80)
+        out = model.generate.remote(p, max_new_tokens=80)
         print("\nprompt:", p)
         print("response:", out)
 
@@ -139,8 +111,7 @@ def main():
     print("testing activation collection")
     print("=" * 80)
 
-    collector = ActivationCollector()
-    result = collector.collect_from_text.remote(
+    result = model.collect_from_text.remote(
         "the relationship between china and usa is complex",
         target_layer=14,
     )
