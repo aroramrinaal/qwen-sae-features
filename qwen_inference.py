@@ -20,6 +20,7 @@ image = (
         "accelerate",
         "safetensors",
     )
+    .add_local_python_source("collect_activations")
 )
 
 
@@ -71,33 +72,16 @@ class QwenModel:
 
     @modal.method()
     def collect_from_text(self, text: str, target_layer: int = 14):
-        """Run text through the model and capture the residual stream at target_layer.
+        """Thin wrapper – delegates to collect_activations.collect_from_text."""
+        from collect_activations import collect_from_text
 
-        Inserts a forward hook that grabs the activation tensor as it flows
-        through the transformer block, without changing the forward pass.
-        """
-        import torch
-
-        def hook_fn(module, input, output):
-            # output[0] is the residual stream tensor
-            # shape: [batch_size, sequence_length, hidden_size]
-            self.captured_activations.append(output[0].detach().cpu())
-
-        # qwen architecture: model.layers[i] is each transformer block
-        handle = self.model.model.layers[target_layer].register_forward_hook(hook_fn)
-
-        inputs = self.tokenizer(text, return_tensors="pt").to(self.model.device)
-        with torch.no_grad():
-            _ = self.model(**inputs)
-
-        handle.remove()
-
-        if self.captured_activations:
-            act = self.captured_activations[-1]
+        result = collect_from_text(self.model, self.tokenizer, text, target_layer)
+        if result is not None:
+            self.captured_activations.append(result["activation"])
             return {
-                "shape": list(act.shape),
-                "layer": target_layer,
-                "num_tokens": act.shape[1],
+                "shape": result["shape"],
+                "layer": result["layer"],
+                "num_tokens": result["num_tokens"],
             }
         return None
 
