@@ -86,7 +86,7 @@ class ActivationCollector:
         self.tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
         self.model = AutoModelForCausalLM.from_pretrained(
             MODEL_ID,
-            torch_dtype=torch.float16,
+            dtype=torch.float16,
             device_map="auto",
         )
         self.model.eval()
