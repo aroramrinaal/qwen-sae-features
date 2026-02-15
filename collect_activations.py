@@ -5,24 +5,11 @@
 
 import torch
 
-
 def collect_from_text(model, tokenizer, text: str, target_layer: int = 14):
-    """Run *text* through *model* and capture the residual stream at *target_layer*.
-
-    Args:
-        model:        a loaded HuggingFace causal-lm (e.g. Qwen2.5-1.5B)
-        tokenizer:    the matching tokenizer
-        text:         raw string to feed through the model
-        target_layer: which transformer block to hook (0-indexed)
-
-    Returns:
-        dict with shape, layer, num_tokens  –  or None if nothing was captured
-    """
+    
     captured = []
 
     def hook_fn(module, input, output):
-        # output[0] is the residual stream tensor
-        # shape: [batch_size, sequence_length, hidden_size]
         captured.append(output[0].detach().cpu())
 
     # qwen architecture: model.model.layers[i] is each transformer block
